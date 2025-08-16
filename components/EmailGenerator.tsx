@@ -118,6 +118,15 @@ export default function EmailGenerator() {
     }
   }
 
+  function sanitizeRecipients(raw: string): string {
+  if (!raw) return "";
+  return raw
+    .split(/[,;]+/) // split on commas or semicolons
+    .map((email) => email.trim()) // remove spaces around
+    .filter((email) => email.length > 0) // remove empty strings
+    .join(","); // join with comma (standard for mailto)
+}
+
   // ---- copy helpers ----
   async function copy(text: string) {
     try {
@@ -404,21 +413,21 @@ ${result.body}`;
                   <button
                     type="button"
                     className="btn btn-ghost h-12"
-                    onClick={() => openGmail(values.to, result.subject, result.body)}
+                    onClick={() => openGmail(sanitizeRecipients(values.to),result.subject,result.body)}
                   >
                     Open in Gmail
                   </button>
                   <button
                     type="button"
                     className="btn btn-ghost h-12"
-                    onClick={() => openOutlook(values.to, result.subject, result.body)}
+                    onClick={() => openOutlook(sanitizeRecipients(values.to),result.subject,result.body)}
                   >
                     Open in Outlook
                   </button>
                   <button
                     type="button"
                     className="btn btn-ghost h-12"
-                    onClick={() => openYahoo(values.to, result.subject, result.body)}
+                    onClick={() => openYahoo(sanitizeRecipients(values.to),result.subject,result.body)}
                   >
                     Open in Yahoo
                   </button>

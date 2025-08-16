@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 
+
 type Extracted = {
   subject: string;
   body: string;
@@ -67,6 +68,27 @@ export default function EmailGenerator() {
   const [previewOpen, setPreviewOpen] = useState<boolean>(true); // collapsed on small screens via CSS toggle below
 
   // ---- persistence ----
+  // 1) put at top of the file (after imports)
+const STORAGE_KEY = "nte_values_v3"; // bump key to avoid old data
+const storageGet = (k: string) =>
+  typeof window === "undefined" ? null : sessionStorage.getItem(k);
+const storageSet = (k: string, v: string) =>
+  typeof window === "undefined" ? void 0 : sessionStorage.setItem(k, v);
+
+// 2) replace your current persistence effects with these:
+useEffect(() => {
+  const saved = storageGet(STORAGE_KEY);
+  if (saved) {
+    try { setValues(JSON.parse(saved)); } catch {}
+  }
+}, []);
+
+useEffect(() => {
+  // Save per tab only
+  storageSet(STORAGE_KEY, JSON.stringify(values));
+}, [values]);
+
+
   useEffect(() => {
   function onKey(e: KeyboardEvent) {
     const meta = e.metaKey || e.ctrlKey;

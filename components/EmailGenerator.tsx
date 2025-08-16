@@ -68,6 +68,29 @@ export default function EmailGenerator() {
 
   // ---- persistence ----
   useEffect(() => {
+  function onKey(e: KeyboardEvent) {
+    const meta = e.metaKey || e.ctrlKey;
+    if (meta && e.key.toLowerCase() === "enter") {
+      // trigger Generate
+      const form = document.querySelector("form");
+      form?.dispatchEvent(new Event("submit", { cancelable: true, bubbles: true }));
+    }
+    if (meta && e.shiftKey && e.key.toLowerCase() === "c" && result) {
+      const both = `Subject: ${result.subject}\n\n${result.body}`;
+      navigator.clipboard.writeText(both);
+      // quick toast
+      const el = document.createElement("div");
+      el.textContent = "Copied both!";
+      el.style.cssText = "position:fixed;bottom:20px;right:20px;background:#0f141a;color:#e7eef7;border:1px solid #223042;padding:10px 12px;border-radius:10px;z-index:9999";
+      document.body.appendChild(el);
+      setTimeout(() => el.remove(), 1200);
+    }
+  }
+  window.addEventListener("keydown", onKey);
+  return () => window.removeEventListener("keydown", onKey);
+}, [result]);
+
+  useEffect(() => {
     const saved = localStorage.getItem("nte_values_v2");
     if (saved) try { setValues(JSON.parse(saved)); } catch {}
   }, []);
@@ -128,6 +151,17 @@ export default function EmailGenerator() {
 }
 
   // ---- copy helpers ----
+  function isValidEmail(email: string) {
+  // simple, permissive check (good enough for UI)
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+}
+
+  function validateRecipients(raw: string): { ok: boolean; bad: string[] } {
+    const list = sanitizeRecipients(raw).split(",").filter(Boolean);
+    const bad = list.filter((e) => !isValidEmail(e));
+    return { ok: bad.length === 0, bad };
+  }
+
   async function copy(text: string) {
     try {
       await navigator.clipboard.writeText(text);
@@ -211,6 +245,11 @@ ${result.body}`;
             onChange={(e) => set("to", e.target.value)}
             spellCheck={false}
           />
+          {values.to && !validateRecipients(values.to).ok && (
+    <p className="text-xs text-red-400 mt-1">
+      Check these addresses: {validateRecipients(values.to).bad.join(", ")}
+    </p>
+  )}
           <p className="text-xs text-slate-400 mt-1">
             Optional — used only by the “Open in Gmail/Outlook/Yahoo/Mail” buttons.
           </p>
@@ -352,6 +391,7 @@ ${result.body}`;
             Clear
           </button>
         </div>
+        <p className="text-xs text-slate-500">Shortcut: Cmd/Ctrl + Enter</p>
       </form>
 
       {/* ======== PREVIEW (collapsible on small, sticky on desktop) ======== */}

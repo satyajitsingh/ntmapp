@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { composeEmail, subjectFrom } from "@/utils/format";
 
-// ----- request validation (now includes "casual") -----
+/* ---------- validation ---------- */
 const bodySchema = z.object({
   title: z.string().optional(),
   date: z.string().optional(),
@@ -14,23 +14,22 @@ const bodySchema = z.object({
   notes: z.string().min(10)
 });
 
-// ----- prompt helpers -----
+/* ---------- tone guidance for extraction step (not the final email) ---------- */
 function toneHints(tone: string) {
   switch (tone) {
     case "casual":
       return `
-Use a friendly, conversational tone.
-Use contractions like "we'll", "it's", "you're", "let's".
-Prefer short sentences and plain language.
-Avoid stiff corporate phrasing and buzzwords.
-Open with a light intro (e.g., "Hey folks, just a quick recap from today’s chat…").
+Use a friendly, conversational tone in the *final email*.
+Use contractions (we'll, it's, you're, let's).
+Keep sentences short and avoid buzzwords.
+Open with a light intro (e.g., "Hey folks — quick recap …").
 `.trim();
     case "friendly":
       return `Use warm, approachable language without being overly casual.`;
     case "persuasive":
       return `Use confident, motivating language to encourage action and ownership.`;
     case "formal":
-      return `Use professional, businesslike language with complete sentences.`;
+      return `Use professional, business-like language with complete sentences.`;
     case "concise":
       return `Be brief and to the point; include only essential information.`;
     default:
@@ -38,11 +37,21 @@ Open with a light intro (e.g., "Hey folks, just a quick recap from today’s cha
   }
 }
 
-const SYSTEM_PROMPT = `You turn messy meeting notes into ready-to-send plain-text emails.
-Follow the requested tone, audience, and email type.
-Always extract: decisions, action items (owner, due date), and open questions.
-Return content suitable for email clients (no markdown).`;
+/* ---------- SYSTEM: extraction-only ---------- */
+const SYSTEM_PROMPT = `You turn messy meeting notes into a structured summary.
 
+ONLY EXTRACT structured fields; DO NOT write the final email body.
+We will format the final email on the server.
+
+Return JSON with:
+- summary: string (2–5 lines max, plain text, no markdown)
+- decisions: string[]
+- actions: { owner: string, task: string, due: string }[]
+- questions: string[]
+
+Notes can be noisy; extract what’s reliable.`;
+
+/* ---------- user template for extraction ---------- */
 function userTemplate(p: {
   title?: string;
   date?: string;
@@ -59,33 +68,36 @@ MEETING TITLE: ${p.title ?? ""}
 DATE: ${p.date ?? ""}
 PARTICIPANTS: ${p.participants ?? ""}
 AUDIENCE: ${p.audience}
-TONE: ${p.tone}
+TONE (for final email): ${p.tone}
 EMAIL TYPE: ${p.type}
 TARGET LENGTH: ${p.length}
 
-TONE GUIDANCE:
+TONE GUIDANCE (for awareness only):
 ${p.toneInstructions || "(none)"}
 
 NOTES:
 ${p.notes}
 
 CONSTRAINTS:
-- Subject line ≤ 80 chars.
-- Start with a 2–3 line executive summary (match tone).
-- Separate sections: Decisions, Action Items (Owner • Task • Due), Open Questions.
-- End with a clear request to confirm or correct.
+- You are EXTRACTING ONLY, not writing the final email.
+- Keep "summary" as short plain text lines (no bullets needed).
+- "actions" should capture owner, task, and due date when available.
+- If a field is empty, return an empty array or empty string (do not invent).
 `.trim();
 }
 
 const EXTRACTION_SCHEMA = `
-Return a valid JSON object with keys:
-- summary: string
-- decisions: string[]
-- actions: { owner: string, task: string, due: string }[]
-- questions: string[]
-Do not include any other keys.`.trim();
+Return a valid JSON object with keys EXACTLY:
+{
+  "summary": string,
+  "decisions": string[],
+  "actions": [{"owner": string, "task": string, "due": string}],
+  "questions": string[]
+}`.trim();
 
-// ----- route handler -----
+/* =========================
+   Route handler
+   ========================= */
 export async function POST(req: NextRequest) {
   const json = await req.json();
   const parsed = bodySchema.safeParse(json);
@@ -95,72 +107,68 @@ export async function POST(req: NextRequest) {
   const p = parsed.data;
   const hasKey = !!process.env.OPENAI_API_KEY;
 
-  // Fallback: works without any API key (naive extraction)
+  /* ---------- Fallback path: no API key ---------- */
   if (!hasKey) {
     try {
-      const lines = p.notes
-        .split(/\r?\n/)
-        .map((l) => l.trim())
-        .filter(Boolean);
+      const lines = p.notes.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
 
-      // crude heuristics to pull actions/decisions/questions
+      // naive signal extraction
       const actions = lines
-        .filter((l) => /\b(to|by|due|assign|owner|review)\b/i.test(l))
-        .slice(0, 12)
-        .map((l) => {
-          // try to infer owner as first capitalized token
+        .filter(l => /\b(to|by|due|assign|owner|review|follow\s*up)\b/i.test(l))
+        .slice(0, 20)
+        .map(l => {
           const ownerMatch = l.match(/^([A-Z][a-zA-Z]+)/);
           return { owner: ownerMatch ? ownerMatch[1] : "TBD", task: l, due: "" };
         });
 
       const decisions = lines
-        .filter((l) => /decided|agree|approved?|keep|choose|conclude|push|move/i.test(l))
-        .slice(0, 12);
+        .filter(l => /decided|agree|approved?|keep|choose|conclude|push|move/i.test(l))
+        .slice(0, 20);
 
       const questions = lines
-        .filter((l) => /\?$/.test(l) || /open|blocker|unknown|pending/i.test(l))
-        .slice(0, 12);
+        .filter(l => /\?$/.test(l) || /open|blocker|unknown|pending/i.test(l))
+        .slice(0, 20);
 
+      // short plain summary (first few lines glued)
       const summary = lines.slice(0, 3).join(" ");
 
-// Compose with new formatter (includes intro + attendees)
-    const body = composeEmail({
-    title: p.title,
-    date: p.date,                 // ✅ make sure this is here
-    participants: p.participants, // ✅ make sure this is here
-    audience: p.audience as any,
-    tone: p.tone as any,
-    type: p.type as any,
-    summary,
-    decisions,
-    actions,
-    questions,
-  });
-  const subject = subjectFrom(p.title, p.type);
-  return NextResponse.json({ subject, body, actions });;
+      // Compose FINAL email with formatter (adds intro, Attendees, sections)
+      const body = composeEmail({
+        title: p.title,
+        date: p.date,
+        participants: p.participants,
+        audience: p.audience as any,
+        tone: p.tone as any,
+        type: p.type as any,
+        summary,
+        decisions,
+        actions,
+        questions
+      });
+
+      // Subject strictly from title + type (short & concise)
+      const subject = subjectFrom(p.title, p.type);
+
+      return NextResponse.json({ subject, body, actions });
     } catch (e) {
       return NextResponse.json({ error: "Generation failed." }, { status: 500 });
     }
   }
 
-  // With OpenAI: two-step extraction -> composition, with tone-aware guidance
+  /* ---------- OpenAI path: extract -> compose ---------- */
   try {
     const { OpenAI } = await import("openai");
     const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY! });
 
     const toneInstructions = toneHints(p.tone);
 
-    // Step 1: extract structured info
     const extraction = await client.chat.completions.create({
       model: "gpt-4o-mini",
       temperature: 0.2,
       response_format: { type: "json_object" },
       messages: [
         { role: "system", content: SYSTEM_PROMPT },
-        {
-          role: "user",
-          content: userTemplate({ ...p, toneInstructions }) + "\n\n" + EXTRACTION_SCHEMA
-        }
+        { role: "user", content: userTemplate({ ...p, toneInstructions }) + "\n\n" + EXTRACTION_SCHEMA }
       ]
     });
 
@@ -169,24 +177,25 @@ export async function POST(req: NextRequest) {
     try {
       data = JSON.parse(raw);
     } catch {
-      data = {};
+      data = { summary: "", decisions: [], actions: [], questions: [] };
     }
 
-    // Step 2: compose final email with our deterministic formatter
     const body = composeEmail({
-    title: p.title,
-    date: p.date,                 // ✅
-    participants: p.participants, // ✅
-    audience: p.audience as any,
-    tone: p.tone as any,
-    type: p.type as any,
-    summary: data.summary ?? "",
-    decisions: Array.isArray(data.decisions) ? data.decisions : [],
-    actions: Array.isArray(data.actions) ? data.actions : [],
-    questions: Array.isArray(data.questions) ? data.questions : [],
-  });
-  const subject = subjectFrom(p.title, p.type);
-  return NextResponse.json({ subject, body, actions: data.actions ?? [] });
+      title: p.title,
+      date: p.date,
+      participants: p.participants,
+      audience: p.audience as any,
+      tone: p.tone as any,
+      type: p.type as any,
+      summary: data.summary ?? "",
+      decisions: Array.isArray(data.decisions) ? data.decisions : [],
+      actions: Array.isArray(data.actions) ? data.actions : [],
+      questions: Array.isArray(data.questions) ? data.questions : []
+    });
+
+    const subject = subjectFrom(p.title, p.type);
+
+    return NextResponse.json({ subject, body, actions: data.actions ?? [] });
   } catch (e) {
     console.error(e);
     return NextResponse.json({ error: "Generation failed." }, { status: 500 });

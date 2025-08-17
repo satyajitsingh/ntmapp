@@ -2,7 +2,6 @@
 
 import { useEffect, useMemo, useState } from "react";
 
-
 type Extracted = {
   subject: string;
   body: string;
@@ -18,7 +17,7 @@ type Values = {
   type: "summary" | "follow-up" | "action-only";
   length: "short" | "medium" | "long";
   notes: string;
-  to: string; // recipients for compose quick actions (comma-separated)
+  to: string;
 };
 
 const SAMPLE_NOTES = `- Design ready; backend ~2 weeks behind
@@ -27,149 +26,158 @@ const SAMPLE_NOTES = `- Design ready; backend ~2 weeks behind
 - Client wants weekly status`;
 
 const TONE_PREVIEW: Record<Values["tone"], { intro: string; signoff: string }> = {
-  concise: {
-    intro: "Quick summary below. Highlights + next steps.",
-    signoff: "Thanks!"
-  },
-  formal: {
-    intro: "Please find a concise summary of today’s discussion below.",
-    signoff: "Best regards,"
-  },
-  friendly: {
-    intro: "Here’s a clear recap of what we covered today.",
-    signoff: "Thanks so much,"
-  },
-  persuasive: {
-    intro: "Here’s where we are and what we need to move forward.",
-    signoff: "Thanks in advance,"
-  },
-  casual: {
-    intro: "Hey folks — quick recap from today’s chat:",
-    signoff: "Cheers,"
-  }
+  concise: { intro: "Quick summary below. Highlights + next steps.", signoff: "Thanks!" },
+  formal: { intro: "Please find a concise summary of today’s discussion below.", signoff: "Best regards," },
+  friendly: { intro: "Here’s a clear recap of what we covered today.", signoff: "Thanks so much," },
+  persuasive: { intro: "Here’s where we are and what we need to move forward.", signoff: "Thanks in advance," },
+  casual: { intro: "Hey folks — quick recap from today’s chat:", signoff: "Cheers," }
 };
 
+/* =========================
+   Safe per-tab storage
+   ========================= */
+const STORAGE_KEY = "nte_values_v4"; // bump to invalidate any earlier saves
+
+type SafeStore = { get:(k:string)=>string|null; set:(k:string,v:string)=>void; remove:(k:string)=>void; };
+function makeSafeSessionStorage(): SafeStore {
+  let ok = false, ss: Storage | null = null;
+  try {
+    if (typeof window !== "undefined" && "sessionStorage" in window) {
+      ss = window.sessionStorage;
+      const T = "__test_ss__";
+      ss.setItem(T, "1"); ss.removeItem(T);
+      ok = true;
+    }
+  } catch { ok = false; }
+  if (!ok) {
+    const mem = new Map<string,string>();
+    return {
+      get: k => mem.get(k) ?? null,
+      set: (k,v) => { mem.set(k,v); },
+      remove: k => { mem.delete(k); }
+    };
+  }
+  return {
+    get: k => ss!.getItem(k),
+    set: (k,v) => { try { ss!.setItem(k,v); } catch {} },
+    remove: k => { try { ss!.removeItem(k); } catch {} }
+  };
+}
+const sessionSafe = makeSafeSessionStorage();
+
+/* =========================
+   Helpers
+   ========================= */
+function sanitizeRecipients(raw: string): string {
+  if (!raw) return "";
+  return raw
+    .split(/[,;]+/)
+    .map(e => e.trim())
+    .filter(Boolean)
+    .join(",");
+}
+function isValidEmail(email: string) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+}
+function validateRecipients(raw: string): { ok: boolean; bad: string[] } {
+  const list = sanitizeRecipients(raw).split(",").filter(Boolean);
+  const bad = list.filter(e => !isValidEmail(e));
+  return { ok: bad.length === 0, bad };
+}
+function toast(msg: string) {
+  const el = document.createElement("div");
+  el.textContent = msg;
+  el.style.cssText = "position:fixed;bottom:20px;right:20px;background:#0f141a;color:#e7eef7;border:1px solid #223042;padding:10px 12px;border-radius:10px;z-index:9999";
+  document.body.appendChild(el);
+  setTimeout(() => el.remove(), 1500);
+}
+async function copyToClipboard(text: string) {
+  try {
+    await navigator.clipboard.writeText(text);
+  } catch {
+    const ta = document.createElement("textarea");
+    ta.value = text; ta.style.position = "fixed"; ta.style.opacity = "0";
+    document.body.appendChild(ta); ta.select(); document.execCommand("copy"); document.body.removeChild(ta);
+  }
+  toast("Copied!");
+}
+
+/* =========================
+   Compose links (no OAuth)
+   ========================= */
+function encodeParam(v: string) { return encodeURIComponent(v || ""); }
+function trimSubject(s: string) { return s.replace(/\r?\n/g, " ").trim().slice(0, 200); }
+
+function openGmail(to: string, subject: string, body: string) {
+  const url = `https://mail.google.com/mail/?view=cm&fs=1&tf=1&to=${encodeParam(to)}&su=${encodeParam(trimSubject(subject))}&body=${encodeParam(body)}`;
+  window.open(url, "_blank");
+}
+function openOutlook(to: string, subject: string, body: string) {
+  const url = `https://outlook.live.com/owa/?path=/mail/action/compose&to=${encodeParam(to)}&subject=${encodeParam(trimSubject(subject))}&body=${encodeParam(body)}`;
+  window.open(url, "_blank");
+}
+function openYahoo(to: string, subject: string, body: string) {
+  const url = `https://compose.mail.yahoo.com/?to=${encodeParam(to)}&subject=${encodeParam(trimSubject(subject))}&body=${encodeParam(body)}`;
+  window.open(url, "_blank");
+}
+function openMailto(to: string, subject: string, body: string) {
+  const href = `mailto:${encodeParam(to)}?subject=${encodeParam(trimSubject(subject))}&body=${encodeParam(body)}`;
+  window.location.href = href;
+}
+
+/* =========================
+   Component
+   ========================= */
 export default function EmailGenerator() {
-  // ---- state ----
   const [values, setValues] = useState<Values>({
-    title: "",
-    date: "",
-    participants: "",
-    audience: "internal",
-    tone: "concise",
-    type: "follow-up",
-    length: "medium",
-    notes: "",
-    to: ""
+    title: "", date: "", participants: "",
+    audience: "internal", tone: "concise", type: "follow-up",
+    length: "medium", notes: "", to: ""
   });
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<Extracted | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [previewOpen, setPreviewOpen] = useState<boolean>(true); // collapsed on small screens via CSS toggle below
+  const [previewOpen, setPreviewOpen] = useState<boolean>(true);
 
-  // ---- persistence ----
+  const toneTip = TONE_PREVIEW[values.tone];
 
-const STORAGE_KEY = "nte_values_v3"; // bump key to avoid old data
-type SafeStore = {
-  get: (k: string) => string | null;
-  set: (k: string, v: string) => void;
-  remove: (k: string) => void;
-};
-// const storageGet = (k: string) =>
-//   typeof window === "undefined" ? null : sessionStorage.getItem(k);
-// const storageSet = (k: string, v: string) =>
-//   typeof window === "undefined" ? void 0 : sessionStorage.setItem(k, v);
-
-
-const sessionSafe = makeSafeSessionStorage();
-// useEffect(() => {
-//   const { notes, to, ...safe } = values;
-//   const payload = JSON.stringify(safe);
-//   setSession(STORAGE_KEY, payload);
-// }, [values.title, values.date, values.participants, values.audience, values.tone, values.type, values.length]);
-
-
-// useEffect(() => {
-//   const saved = storageGet(STORAGE_KEY);
-//   if (saved) {
-//     try { setValues(JSON.parse(saved)); } catch {}
-//   }
-// }, []);
-
-// useEffect(() => {
-//   // Save per tab only
-//   storageSet(STORAGE_KEY, JSON.stringify(values));
-// }, [values]);
-
-
+  /* ---- Persistence ---- */
   useEffect(() => {
-  function onKey(e: KeyboardEvent) {
-    const meta = e.metaKey || e.ctrlKey;
-    if (meta && e.key.toLowerCase() === "enter") {
-      // trigger Generate
-      const form = document.querySelector("form");
-      form?.dispatchEvent(new Event("submit", { cancelable: true, bubbles: true }));
+    if (typeof window === "undefined") return;
+    try { window.localStorage.removeItem("nte_values_v2"); } catch {}
+    const saved = sessionSafe.get(STORAGE_KEY);
+    if (saved) {
+      try { setValues(JSON.parse(saved)); } catch {}
     }
-    if (meta && e.shiftKey && e.key.toLowerCase() === "c" && result) {
-      const both = `Subject: ${result.subject}\n\n${result.body}`;
-      navigator.clipboard.writeText(both);
-      // quick toast
-      const el = document.createElement("div");
-      el.textContent = "Copied both!";
-      el.style.cssText = "position:fixed;bottom:20px;right:20px;background:#0f141a;color:#e7eef7;border:1px solid #223042;padding:10px 12px;border-radius:10px;z-index:9999";
-      document.body.appendChild(el);
-      setTimeout(() => el.remove(), 1200);
-    }
-  }
-  window.addEventListener("keydown", onKey);
-  return () => window.removeEventListener("keydown", onKey);
-}, [result]);
-
-  useEffect(() => {
-    const saved = localStorage.getItem("nte_values_v2");
-    if (saved) try { setValues(JSON.parse(saved)); } catch {}
   }, []);
+  useEffect(() => { sessionSafe.set(STORAGE_KEY, JSON.stringify(values)); }, [values]);
   useEffect(() => {
-    localStorage.setItem("nte_values_v2", JSON.stringify(values));
-  }, [values]);
+    const onPageHide = () => sessionSafe.remove(STORAGE_KEY);
+    window.addEventListener("pagehide", onPageHide);
+    return () => window.removeEventListener("pagehide", onPageHide);
+  }, []);
 
-  function makeSafeSessionStorage(): SafeStore {
-  let ok = false;
-  let ss: Storage | null = null;
-  try {
-    if (typeof window !== "undefined" && "sessionStorage" in window) {
-      ss = window.sessionStorage;
-      // test write
-      const t = "__test_ss__";
-      ss.setItem(t, "1");
-      ss.removeItem(t);
-      ok = true;
+  /* ---- Shortcuts ---- */
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      const meta = e.metaKey || e.ctrlKey;
+      if (meta && e.key.toLowerCase() === "enter") {
+        const form = document.querySelector("form");
+        form?.dispatchEvent(new Event("submit", { cancelable: true, bubbles: true }));
+      }
+      if (meta && e.shiftKey && e.key.toLowerCase() === "c" && result) {
+        copyToClipboard(`Subject: ${result.subject}\n\n${result.body}`);
+      }
     }
-  } catch {
-    ok = false;
-  }
-  if (!ok) {
-    // no-op in-memory fallback so app still runs
-    const mem = new Map<string, string>();
-    return {
-      get: (k) => mem.get(k) ?? null,
-      set: (k, v) => { mem.set(k, v); },
-      remove: (k) => { mem.delete(k); },
-    };
-  }
-  return {
-    get: (k) => ss!.getItem(k),
-    set: (k, v) => { try { ss!.setItem(k, v); } catch {} },
-    remove: (k) => { try { ss!.removeItem(k); } catch {} },
-  };
-}
-
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [result]);
 
   function set<K extends keyof Values>(k: K, v: Values[K]) {
     setValues(prev => ({ ...prev, [k]: v }));
   }
 
-  // ---- generate ----
+  /* ---- Generate ---- */
   async function onGenerate(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
@@ -180,27 +188,18 @@ const sessionSafe = makeSafeSessionStorage();
     setLoading(true);
     setResult(null);
     try {
-      // send only fields the API expects
       const payload = {
-        title: values.title,
-        date: values.date,
-        participants: values.participants,
-        audience: values.audience,
-        tone: values.tone,
-        type: values.type,
-        length: values.length,
-        notes: values.notes
+        title: values.title, date: values.date, participants: values.participants,
+        audience: values.audience, tone: values.tone, type: values.type,
+        length: values.length, notes: values.notes
       };
       const res = await fetch("/api/generate", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
+        method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload)
       });
       if (!res.ok) throw new Error(await res.text());
       const data = await res.json();
-      setResult(data);
-      // auto-open preview on mobile after generation
-      setPreviewOpen(true);
+      setResult(data); setPreviewOpen(true);
     } catch (err: any) {
       setError(err.message || "Something went wrong.");
     } finally {
@@ -208,101 +207,16 @@ const sessionSafe = makeSafeSessionStorage();
     }
   }
 
-  function sanitizeRecipients(raw: string): string {
-  if (!raw) return "";
-  return raw
-    .split(/[,;]+/) // split on commas or semicolons
-    .map((email) => email.trim()) // remove spaces around
-    .filter((email) => email.length > 0) // remove empty strings
-    .join(","); // join with comma (standard for mailto)
-}
-
-  // ---- copy helpers ----
-  function isValidEmail(email: string) {
-  // simple, permissive check (good enough for UI)
-  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
-}
-
-  function validateRecipients(raw: string): { ok: boolean; bad: string[] } {
-    const list = sanitizeRecipients(raw).split(",").filter(Boolean);
-    const bad = list.filter((e) => !isValidEmail(e));
-    return { ok: bad.length === 0, bad };
-  }
-
-  async function copy(text: string) {
-    try {
-      await navigator.clipboard.writeText(text);
-      toast("Copied!");
-    } catch {
-      const ta = document.createElement("textarea");
-      ta.value = text;
-      ta.style.position = "fixed";
-      ta.style.opacity = "0";
-      document.body.appendChild(ta);
-      ta.select();
-      document.execCommand("copy");
-      document.body.removeChild(ta);
-      toast("Copied!");
-    }
-  }
-
-  function toast(msg: string) {
-    const el = document.createElement("div");
-    el.textContent = msg;
-    el.style.cssText =
-      "position:fixed;bottom:20px;right:20px;background:#0f141a;color:#e7eef7;border:1px solid #223042;padding:10px 12px;border-radius:10px;z-index:9999";
-    document.body.appendChild(el);
-    setTimeout(() => el.remove(), 1500);
-  }
-
   const combinedPlain = useMemo(() => {
     if (!result) return "";
-    return `Subject: ${result.subject}
-
-${result.body}`;
+    return `Subject: ${result.subject}\n\n${result.body}`;
   }, [result]);
 
-  // ---- compose quick-actions (no OAuth) ----
-  function encodeParam(v: string) {
-    return encodeURIComponent(v || "");
-  }
-  function trimSubject(s: string) {
-    const oneLine = s.replace(/\r?\n/g, " ").trim();
-    return oneLine.slice(0, 200); // keep it reasonable for URL length
-  }
-  function openGmail(to: string, subject: string, body: string) {
-    const url = `https://mail.google.com/mail/?view=cm&fs=1&tf=1&to=${encodeParam(
-      to
-    )}&su=${encodeParam(trimSubject(subject))}&body=${encodeParam(body)}`;
-    window.open(url, "_blank");
-  }
-  function openOutlook(to: string, subject: string, body: string) {
-    // Works for Outlook.com and usually redirects for M365
-    const url = `https://outlook.live.com/owa/?path=/mail/action/compose&to=${encodeParam(
-      to
-    )}&subject=${encodeParam(trimSubject(subject))}&body=${encodeParam(body)}`;
-    window.open(url, "_blank");
-  }
-  function openYahoo(to: string, subject: string, body: string) {
-    const url = `https://compose.mail.yahoo.com/?to=${encodeParam(
-      to
-    )}&subject=${encodeParam(trimSubject(subject))}&body=${encodeParam(body)}`;
-    window.open(url, "_blank");
-  }
-  function openMailto(to: string, subject: string, body: string) {
-    const href = `mailto:${encodeParam(to)}?subject=${encodeParam(
-      trimSubject(subject)
-    )}&body=${encodeParam(body)}`;
-    window.location.href = href;
-  }
-
-  const toneTip = TONE_PREVIEW[values.tone];
-
+  /* ---- Render ---- */
   return (
     <div className="grid gap-5 md:grid-cols-2">
-      {/* ======== FORM (mobile-first) ======== */}
+      {/* ===== FORM ===== */}
       <form onSubmit={onGenerate} className="card p-4 sm:p-6 space-y-5">
-        {/* Recipients for quick compose */}
         <div>
           <label>Recipient(s)</label>
           <input
@@ -313,13 +227,10 @@ ${result.body}`;
             spellCheck={false}
           />
           {values.to && !validateRecipients(values.to).ok && (
-    <p className="text-xs text-red-400 mt-1">
-      Check these addresses: {validateRecipients(values.to).bad.join(", ")}
-    </p>
-  )}
-          <p className="text-xs text-slate-400 mt-1">
-            Optional — used only by the “Open in Gmail/Outlook/Yahoo/Mail” buttons.
-          </p>
+            <p className="text-xs text-red-400 mt-1">
+              Check: {validateRecipients(values.to).bad.join(", ")}
+            </p>
+          )}
         </div>
 
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -330,7 +241,6 @@ ${result.body}`;
               placeholder="Q3 Planning Sync"
               value={values.title}
               onChange={(e) => set("title", e.target.value)}
-              spellCheck={true}
             />
           </div>
           <div>
@@ -349,12 +259,11 @@ ${result.body}`;
               placeholder="Alice, Bob, Carol"
               value={values.participants}
               onChange={(e) => set("participants", e.target.value)}
-              spellCheck={true}
             />
           </div>
         </div>
 
-        {/* Tone + live preview */}
+        {/* Tone, audience, type */}
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
           <div>
             <label>Audience</label>
@@ -396,14 +305,12 @@ ${result.body}`;
           </div>
         </div>
 
-        {/* Tone preview card */}
+        {/* Tone preview */}
         <div className="rounded-xl border border-[#1e2733] bg-[#0f141a] p-3">
           <p className="text-xs text-slate-400 mb-1">Tone preview</p>
-          <div className="text-sm leading-6">
-            <p className="text-slate-200">
-              <span className="opacity-80">{toneTip.intro}</span>
-            </p>
-            <p className="text-slate-400 mt-1">Sign-off example: <span className="text-slate-200">{toneTip.signoff}</span></p>
+          <div className="text-sm">
+            <p>{toneTip.intro}</p>
+            <p className="text-slate-400">Sign-off: {toneTip.signoff}</p>
           </div>
         </div>
 
@@ -423,154 +330,58 @@ ${result.body}`;
         <div>
           <div className="flex items-end justify-between">
             <label>Notes</label>
-            <button
-              type="button"
-              className="text-xs text-slate-400 hover:text-slate-200"
-              onClick={() => set("notes", SAMPLE_NOTES)}
-            >
-              Insert sample
-            </button>
+            <button type="button" onClick={() => set("notes", SAMPLE_NOTES)} className="text-xs text-slate-400">Insert sample</button>
           </div>
           <textarea
-            className="input mt-1 min-h-[160px] sm:min-h-[200px] resize-y"
+            className="input mt-1 min-h-[160px]"
             placeholder="- Discussed launch slip…"
             value={values.notes}
             onChange={(e) => set("notes", e.target.value)}
-            spellCheck={true}
           />
         </div>
 
         {error && <p className="text-red-400 text-sm">{error}</p>}
 
-        {/* Mobile-first buttons */}
-        <div className="flex flex-col sm:flex-row gap-2 sm:gap-3">
+        <div className="flex flex-col sm:flex-row gap-2">
           <button className="btn btn-primary h-12" disabled={loading}>
             {loading ? "Generating…" : "Generate Email"}
           </button>
-          <button
-            type="button"
-            className="btn btn-ghost h-12"
-            onClick={() => {
-              setResult(null);
-              set("notes", "");
-            }}
-          >
+          <button type="button" className="btn btn-ghost h-12" onClick={() => { setResult(null); set("notes",""); }}>
             Clear
           </button>
         </div>
-        <p className="text-xs text-slate-500">Shortcut: Cmd/Ctrl + Enter</p>
       </form>
 
-      {/* ======== PREVIEW (collapsible on small, sticky on desktop) ======== */}
-      <div className="card p-4 sm:p-6 md:sticky md:top-6 md:h-fit">
-        {/* Collapse toggle visible on small screens */}
-        <div className="flex items-center justify-between sm:hidden mb-3">
-          <h2 className="text-lg font-semibold">Preview</h2>
-          <button
-            className="btn btn-ghost h-10"
-            onClick={() => setPreviewOpen((v) => !v)}
-          >
-            {previewOpen ? "Hide" : "Show"}
-          </button>
-        </div>
+      {/* ===== PREVIEW ===== */}
+      <div className="card p-4 sm:p-6">
+        {!result && !loading && <p className="text-slate-400">Generate to see the email preview.</p>}
+        {loading && <p className="text-slate-400">Loading…</p>}
 
-        {/* Content wrapper: show/hide on small; always show on sm+ */}
-        <div className={`${previewOpen ? "block" : "hidden"} sm:block`}>
-          {!result && !loading && (
-            <div className="text-slate-400">
-              Generate to see the email preview. You can copy the subject, the body, or both — or jump straight to your mail client below.
+        {result && !loading && (
+          <>
+            <div className="flex gap-2 mb-4">
+              <button className="btn btn-ghost" onClick={() => copyToClipboard(result.subject)}>Copy Subject</button>
+              <button className="btn btn-ghost" onClick={() => copyToClipboard(result.body)}>Copy Body</button>
+              <button className="btn btn-primary" onClick={() => copyToClipboard(combinedPlain)}>Copy Both</button>
             </div>
-          )}
 
-          {loading && (
-            <div className="space-y-3 animate-pulse">
-              <div className="h-6 w-2/3 rounded bg-[#0f141a]" />
-              <div className="h-24 rounded bg-[#0f141a]" />
-              <div className="h-40 rounded bg-[#0f141a]" />
+            <div className="grid grid-cols-2 sm:flex gap-2 mb-4">
+              <button className="btn btn-ghost" onClick={() => openGmail(sanitizeRecipients(values.to),result.subject,result.body)}>Gmail</button>
+              <button className="btn btn-ghost" onClick={() => openOutlook(sanitizeRecipients(values.to),result.subject,result.body)}>Outlook</button>
+              <button className="btn btn-ghost" onClick={() => openYahoo(sanitizeRecipients(values.to),result.subject,result.body)}>Yahoo</button>
+              <button className="btn btn-ghost" onClick={() => openMailto(sanitizeRecipients(values.to),result.subject,result.body)}>Mail App</button>
             </div>
-          )}
 
-          {result && !loading && (
-            <>
-              {/* Quick actions */}
-              <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 sm:gap-3 mb-4">
-                <h3 className="font-semibold">Actions</h3>
-                <div className="flex flex-col sm:flex-row gap-2 sm:gap-2">
-                  <button className="btn btn-ghost h-12" onClick={() => copy(result.subject)}>
-                    Copy Subject
-                  </button>
-                  <button className="btn btn-ghost h-12" onClick={() => copy(result.body)}>
-                    Copy Body
-                  </button>
-                  <button
-                    className="btn btn-primary h-12"
-                    onClick={() => copy(`Subject: ${result.subject}\n\n${result.body}`)}
-                  >
-                    Copy Both
-                  </button>
-                </div>
-              </div>
-
-              {/* Open compose in common providers */}
-              <div className="mb-4">
-                <p className="text-xs text-slate-400 mb-2">
-                  Open a draft in your mail service (uses the recipient(s) above):
-                </p>
-                <div className="grid grid-cols-2 sm:flex sm:flex-wrap gap-2">
-                  <button
-                    type="button"
-                    className="btn btn-ghost h-12"
-                    onClick={() => openGmail(sanitizeRecipients(values.to),result.subject,result.body)}
-                  >
-                    Open in Gmail
-                  </button>
-                  <button
-                    type="button"
-                    className="btn btn-ghost h-12"
-                    onClick={() => openOutlook(sanitizeRecipients(values.to),result.subject,result.body)}
-                  >
-                    Open in Outlook
-                  </button>
-                  <button
-                    type="button"
-                    className="btn btn-ghost h-12"
-                    onClick={() => openYahoo(sanitizeRecipients(values.to),result.subject,result.body)}
-                  >
-                    Open in Yahoo
-                  </button>
-                  <button
-                    type="button"
-                    className="btn btn-ghost h-12"
-                    onClick={() => openMailto(values.to, result.subject, result.body)}
-                  >
-                    Open in Mail App
-                  </button>
-                </div>
-              </div>
-
-              {/* Editable preview */}
-              <div className="mb-4">
-                <label>Subject (editable)</label>
-                <input
-                  className="input mt-1 h-12"
-                  value={result.subject}
-                  onChange={(e) => setResult({ ...result, subject: e.target.value })}
-                  spellCheck={true}
-                />
-              </div>
-
-              <div>
-                <label>Body (editable)</label>
-                <textarea
-                  className="input mt-1 min-h-[280px] sm:min-h-[340px] resize-y whitespace-pre-wrap break-words"
-                  value={result.body}
-                  onChange={(e) => setResult({ ...result, body: e.target.value })}
-                  spellCheck={true}
-                />
-              </div>
-            </>
-          )}
-        </div>
+            <div>
+              <label>Subject</label>
+              <input className="input mt-1 h-12" value={result.subject} onChange={(e)=>setResult({...result, subject:e.target.value})}/>
+            </div>
+            <div>
+              <label>Body</label>
+              <textarea className="input mt-1 min-h-[280px]" value={result.body} onChange={(e)=>setResult({...result, body:e.target.value})}/>
+            </div>
+          </>
+        )}
       </div>
     </div>
   );

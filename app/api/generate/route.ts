@@ -121,26 +121,23 @@ export async function POST(req: NextRequest) {
         .filter((l) => /\?$/.test(l) || /open|blocker|unknown|pending/i.test(l))
         .slice(0, 12);
 
-      const summary = (() => {
-        const gist = lines.slice(0, 3).join(" ");
-        if (p.tone === "casual") {
-          return `Hey folks — quick recap: ${gist} ...`;
-        }
-        return `Quick summary: ${gist} ...`;
-      })();
+      const summary = lines.slice(0, 3).join(" ");
 
-      const body = composeEmail({
-        title: p.title,
-        audience: p.audience as any,
-        tone: p.tone as any,
-        type: p.type as any,
-        summary,
-        decisions,
-        actions,
-        questions
-      });
-      const subject = subjectFrom(p.title, summary);
-      return NextResponse.json({ subject, body, actions });
+// Compose with new formatter (includes intro + attendees)
+    const body = composeEmail({
+    title: p.title,
+    date: p.date,                 // ✅ make sure this is here
+    participants: p.participants, // ✅ make sure this is here
+    audience: p.audience as any,
+    tone: p.tone as any,
+    type: p.type as any,
+    summary,
+    decisions,
+    actions,
+    questions,
+  });
+  const subject = subjectFrom(p.title, p.type);
+  return NextResponse.json({ subject, body, actions });;
     } catch (e) {
       return NextResponse.json({ error: "Generation failed." }, { status: 500 });
     }
@@ -177,18 +174,19 @@ export async function POST(req: NextRequest) {
 
     // Step 2: compose final email with our deterministic formatter
     const body = composeEmail({
-      title: p.title,
-      audience: p.audience as any,
-      tone: p.tone as any,
-      type: p.type as any,
-      summary: data.summary ?? "",
-      decisions: Array.isArray(data.decisions) ? data.decisions : [],
-      actions: Array.isArray(data.actions) ? data.actions : [],
-      questions: Array.isArray(data.questions) ? data.questions : []
-    });
-
-    const subject = subjectFrom(p.title, data.summary);
-    return NextResponse.json({ subject, body, actions: data.actions ?? [] });
+    title: p.title,
+    date: p.date,                 // ✅
+    participants: p.participants, // ✅
+    audience: p.audience as any,
+    tone: p.tone as any,
+    type: p.type as any,
+    summary: data.summary ?? "",
+    decisions: Array.isArray(data.decisions) ? data.decisions : [],
+    actions: Array.isArray(data.actions) ? data.actions : [],
+    questions: Array.isArray(data.questions) ? data.questions : [],
+  });
+  const subject = subjectFrom(p.title, p.type);
+  return NextResponse.json({ subject, body, actions: data.actions ?? [] });
   } catch (e) {
     console.error(e);
     return NextResponse.json({ error: "Generation failed." }, { status: 500 });

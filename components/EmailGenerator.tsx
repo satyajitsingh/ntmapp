@@ -68,25 +68,38 @@ export default function EmailGenerator() {
   const [previewOpen, setPreviewOpen] = useState<boolean>(true); // collapsed on small screens via CSS toggle below
 
   // ---- persistence ----
-  // 1) put at top of the file (after imports)
+
 const STORAGE_KEY = "nte_values_v3"; // bump key to avoid old data
-const storageGet = (k: string) =>
-  typeof window === "undefined" ? null : sessionStorage.getItem(k);
-const storageSet = (k: string, v: string) =>
-  typeof window === "undefined" ? void 0 : sessionStorage.setItem(k, v);
+type SafeStore = {
+  get: (k: string) => string | null;
+  set: (k: string, v: string) => void;
+  remove: (k: string) => void;
+};
+// const storageGet = (k: string) =>
+//   typeof window === "undefined" ? null : sessionStorage.getItem(k);
+// const storageSet = (k: string, v: string) =>
+//   typeof window === "undefined" ? void 0 : sessionStorage.setItem(k, v);
 
-// 2) replace your current persistence effects with these:
-useEffect(() => {
-  const saved = storageGet(STORAGE_KEY);
-  if (saved) {
-    try { setValues(JSON.parse(saved)); } catch {}
-  }
-}, []);
 
-useEffect(() => {
-  // Save per tab only
-  storageSet(STORAGE_KEY, JSON.stringify(values));
-}, [values]);
+const sessionSafe = makeSafeSessionStorage();
+// useEffect(() => {
+//   const { notes, to, ...safe } = values;
+//   const payload = JSON.stringify(safe);
+//   setSession(STORAGE_KEY, payload);
+// }, [values.title, values.date, values.participants, values.audience, values.tone, values.type, values.length]);
+
+
+// useEffect(() => {
+//   const saved = storageGet(STORAGE_KEY);
+//   if (saved) {
+//     try { setValues(JSON.parse(saved)); } catch {}
+//   }
+// }, []);
+
+// useEffect(() => {
+//   // Save per tab only
+//   storageSet(STORAGE_KEY, JSON.stringify(values));
+// }, [values]);
 
 
   useEffect(() => {
@@ -119,6 +132,38 @@ useEffect(() => {
   useEffect(() => {
     localStorage.setItem("nte_values_v2", JSON.stringify(values));
   }, [values]);
+
+  function makeSafeSessionStorage(): SafeStore {
+  let ok = false;
+  let ss: Storage | null = null;
+  try {
+    if (typeof window !== "undefined" && "sessionStorage" in window) {
+      ss = window.sessionStorage;
+      // test write
+      const t = "__test_ss__";
+      ss.setItem(t, "1");
+      ss.removeItem(t);
+      ok = true;
+    }
+  } catch {
+    ok = false;
+  }
+  if (!ok) {
+    // no-op in-memory fallback so app still runs
+    const mem = new Map<string, string>();
+    return {
+      get: (k) => mem.get(k) ?? null,
+      set: (k, v) => { mem.set(k, v); },
+      remove: (k) => { mem.delete(k); },
+    };
+  }
+  return {
+    get: (k) => ss!.getItem(k),
+    set: (k, v) => { try { ss!.setItem(k, v); } catch {} },
+    remove: (k) => { try { ss!.removeItem(k); } catch {} },
+  };
+}
+
 
   function set<K extends keyof Values>(k: K, v: Values[K]) {
     setValues(prev => ({ ...prev, [k]: v }));

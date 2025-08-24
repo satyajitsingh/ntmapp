@@ -115,7 +115,7 @@ export async function POST(req: NextRequest) {
       // naive signal extraction
       const actions = lines
         .filter(l => /\b(to|by|due|assign|owner|review|follow\s*up)\b/i.test(l))
-        .slice(0, 20)
+        .slice(0, 50)
         .map(l => {
           const ownerMatch = l.match(/^([A-Z][a-zA-Z]+)/);
           return { owner: ownerMatch ? ownerMatch[1] : "TBD", task: l, due: "" };
@@ -123,14 +123,14 @@ export async function POST(req: NextRequest) {
 
       const decisions = lines
         .filter(l => /decided|agree|approved?|keep|choose|conclude|push|move/i.test(l))
-        .slice(0, 20);
+        .slice(0, 50);
 
       const questions = lines
         .filter(l => /\?$/.test(l) || /open|blocker|unknown|pending/i.test(l))
-        .slice(0, 20);
+        .slice(0, 50);
 
       // short plain summary (first few lines glued)
-      const summary = lines.slice(0, 3).join(" ");
+      const summary = lines.slice(0, 8).join(" ");
 
       // Compose FINAL email with formatter (adds intro, Attendees, sections)
       const body = composeEmail({

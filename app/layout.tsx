@@ -1,7 +1,16 @@
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
-import type { Metadata } from "next";
 import "./globals.css";
+import type { Metadata, Viewport } from "next";
+
+export const viewport: Viewport = {
+  width: "device-width",
+  initialScale: 1,
+  viewportFit: "cover",
+  themeColor: "#0b0f13", // ⬅️ moved here
+};
+
+
 
 export const metadata: Metadata = {
   title: "Notes → Email | MVP",

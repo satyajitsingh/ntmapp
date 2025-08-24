@@ -68,6 +68,25 @@ const sessionSafe = makeSafeSessionStorage();
 /* =========================
    Helpers
    ========================= */
+function downloadEML(subject: string, body: string, to: string) {
+  const date = new Date().toUTCString();
+  const headers = [
+    `Date: ${date}`,
+    `To: ${to || ""}`,
+    `Subject: ${subject}`,
+    `MIME-Version: 1.0`,
+    `Content-Type: text/plain; charset=UTF-8`,
+    `Content-Transfer-Encoding: 8bit`
+  ].join("\r\n");
+  const eml = headers + "\r\n\r\n" + body.replace(/\n/g, "\r\n");
+  const blob = new Blob([eml], { type: "message/rfc822" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = (subject || "email").replace(/[^\w\-]+/g, "_") + ".eml";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+}
 function sanitizeRecipients(raw: string): string {
   if (!raw) return "";
   return raw
@@ -100,6 +119,27 @@ async function copyToClipboard(text: string) {
     document.body.appendChild(ta); ta.select(); document.execCommand("copy"); document.body.removeChild(ta);
   }
   toast("Copied!");
+}
+async function grammarCheck(text: string) {
+  const res = await fetch("https://api.languagetool.org/v2/check", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      text,
+      language: "en-GB" // or en-US
+    })
+  });
+  const data = await res.json();
+  // apply suggestions (simple inline patch)
+  let fixed = text;
+  for (const m of (data.matches || []).reverse()) {
+    const r = m.replacements?.[0]?.value;
+    if (!r) continue;
+    const offset = m.offset;
+    const length = m.length;
+    fixed = fixed.slice(0, offset) + r + fixed.slice(offset + length);
+  }
+  return fixed;
 }
 
 /* =========================
@@ -304,8 +344,46 @@ export default function EmailGenerator() {
             </select>
           </div>
         </div>
-
+    
         {/* Tone preview */}
+        <div className="flex flex-wrap gap-2 mb-4">
+  {["concise","formal","friendly","persuasive","casual"].map((t) => (
+    <button
+      key={t}
+      type="button"
+      className="btn btn-ghost h-10"
+      onClick={async () => {
+        // call the same endpoint, only swapping tone; reuse existing form values
+        const payload = {
+          title: values.title,
+          date: values.date,
+          participants: values.participants,
+          audience: values.audience,
+          tone: t as any,
+          type: values.type,
+          length: values.length,
+          notes: values.notes
+        };
+        setLoading(true);
+        try {
+          const res = await fetch("/api/generate", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload)
+          });
+          const data = await res.json();
+          setResult(data);
+          setValues(v => ({ ...v, tone: t as any })); // update UI tone
+        } finally {
+          setLoading(false);
+        }
+      }}
+    >
+      Rewrite: {t}
+    </button>
+    
+  ))}
+</div>
         <div className="rounded-xl border border-[#1e2733] bg-[#0f141a] p-3">
           <p className="text-xs text-slate-400 mb-1">Tone preview</p>
           <div className="text-sm">
@@ -339,6 +417,20 @@ export default function EmailGenerator() {
             onChange={(e) => set("notes", e.target.value)}
           />
         </div>
+        <div>
+    <button
+  type="button"
+  className="btn btn-ghost h-12"
+  onClick={async () => {
+    if (!result) return;
+    const fixed = await grammarCheck(result.body);
+    setResult({ ...result, body: fixed });
+    toast("Grammar pass applied");
+  }}
+>
+  Check grammar
+</button>
+        </div>
 
         {error && <p className="text-red-400 text-sm">{error}</p>}
 
@@ -370,6 +462,7 @@ export default function EmailGenerator() {
               <button className="btn btn-ghost" onClick={() => openOutlook(sanitizeRecipients(values.to),result.subject,result.body)}>Outlook</button>
               <button className="btn btn-ghost" onClick={() => openYahoo(sanitizeRecipients(values.to),result.subject,result.body)}>Yahoo</button>
               <button className="btn btn-ghost" onClick={() => openMailto(sanitizeRecipients(values.to),result.subject,result.body)}>Mail App</button>
+              <button type="button" className="btn btn-ghost h-12"onClick={() => downloadEML(result.subject, result.body, sanitizeRecipients(values.to))}>Download .eml</button>
             </div>
 
             <div>
@@ -378,7 +471,7 @@ export default function EmailGenerator() {
             </div>
             <div>
               <label>Body</label>
-              <textarea className="input mt-1 min-h-[280px]" value={result.body} onChange={(e)=>setResult({...result, body:e.target.value})}/>
+              <textarea className="input mt-1 min-h-[420px] sm:min-h-[520px] resize-y whitespace-pre-wrap break-words" value={result.body} onChange={(e)=>setResult({...result, body:e.target.value})}/>
             </div>
           </>
         )}
